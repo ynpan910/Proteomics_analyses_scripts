@@ -1,6 +1,6 @@
 ---
 title: "ROSMAP_ProteomicsTMT_02.diffanal"
-author: "Yining Pan"
+author: ""
 date:   "`r format(Sys.Date(), '%B %d, %Y')`"
 output:
   html_document:
