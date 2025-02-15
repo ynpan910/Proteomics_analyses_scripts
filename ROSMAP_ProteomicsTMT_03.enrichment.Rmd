@@ -1,0 +1,427 @@
+---
+title: "ROSMAP_ProteomicsTMT_03.enrichment"
+author: "Yining Pan"
+date:   "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: united
+    code_folding: show
+    toc: true
+#    style: BS831.css  ## feel free to remove this if you don't want it
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+## include these options to avoid unnecessarily verbose output
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+# Settings
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(GSVA))
+suppressPackageStartupMessages(library(org.Hs.eg.db))
+suppressPackageStartupMessages(library(limma))
+suppressPackageStartupMessages(library(edgeR))
+suppressPackageStartupMessages(library(ComplexHeatmap))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(impute))
+suppressPackageStartupMessages(library(hypeR))
+suppressPackageStartupMessages(library(psych))
+suppressPackageStartupMessages(library(reactable))
+```
+
+```{r}
+packageVersion('hypeR')
+```
+
+
+# Load in limmaRes2
+
+```{r}
+# USE results from limmaRes2
+
+limmaRes2<- read.csv('./result/ROSMAP_TMT_DEP_limmaRes2.csv')
+limmaRes2<- limmaRes2 %>% column_to_rownames(var = 'X')
+```
+
+
+```{r}
+sig_up<- limmaRes2 %>% filter(adj.P.Val<0.01 & logFC>0) 
+sig_dn<- limmaRes2 %>% filter(adj.P.Val<0.01 & logFC< 0)
+
+signatures <- list('dn'=sig_dn$gene, 'up'= sig_up$gene)
+str(signatures)
+```
+# Downloading Genesets
+```{r}
+GO_BP<- msigdb_gsets("Homo sapiens", "C5", "BP", clean=T)
+GO_CC<- msigdb_gsets("Homo sapiens", "C5", "CC", clean=T)
+GO_MF<- msigdb_gsets("Homo sapiens", "C5", "MF", clean=T)
+
+KEGG<- msigdb_gsets(species="Homo sapiens", category="C2", subcategory="CP:KEGG",clean=T)
+
+REACTOME <- msigdb_gsets(species="Homo sapiens", category="C2", subcategory="CP:REACTOME",clean=T)
+
+HALLMARK <- msigdb_gsets(species="Homo sapiens", category="H",clean=T)
+
+CHEA<- enrichr_gsets('CHEA_2013', clean = T)
+
+TFT_GTRD<- msigdb_gsets(species="Homo sapiens",category = 'C3', subcategory="TFT:GTRD",clean=T)
+
+TFT_Legacy<- msigdb_gsets(species="Homo sapiens",category = 'C3', subcategory="TFT:TFT_Legacy",clean=T)
+```
+
+# ORA enrichment on the protein (gene) signatures from ctrl vs AD {.tabset}
+
+## Setting up
+```{r}
+max_fdr<- 0.01
+test_fdr<- 0.01
+```
+
+
+## GO_BP
+```{r}
+mhyp_GO_BP <- hypeR(signatures, GO_BP, test="hypergeometric", background=30000)
+
+hyp_dots(mhyp_GO_BP, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+hypeR::rctbl_build(mhyp_GO_BP, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp_GO_BP_up <- hypeR(signatures$up, GO_BP)
+hyp_GO_BP_dn <- hypeR(signatures$dn, GO_BP)
+hyp_to_excel(hyp_GO_BP_up, file_path="./result/DEP_ORA_GO_BP_up.xlsx")
+hyp_to_excel(hyp_GO_BP_dn, file_path="./result/DEP_ORA_GO_BP_dn.xlsx")
+```
+
+## GO_CC
+```{r}
+mhyp_GO_CC <- hypeR(signatures, GO_CC, test="hypergeometric", background=30000)
+
+hyp_dots(mhyp_GO_CC, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+hypeR::rctbl_build(mhyp_GO_CC, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp_GO_CC_up <- hypeR(signatures$up, GO_CC)
+hyp_GO_CC_dn <- hypeR(signatures$dn, GO_CC)
+hyp_to_excel(hyp_GO_CC_up, file_path="./result/DEP_ORA_GO_CC_up.xlsx")
+hyp_to_excel(hyp_GO_CC_dn, file_path="./result/DEP_ORA_GO_CC_dn.xlsx")
+```
+
+## GO_MF
+```{r}
+mhyp_GO_MF <- hypeR(signatures, GO_MF, test="hypergeometric", background=30000)
+
+hyp_dots(mhyp_GO_MF, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+hypeR::rctbl_build(mhyp_GO_MF, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp_GO_MF_up <- hypeR(signatures$up, GO_MF)
+hyp_GO_MF_dn <- hypeR(signatures$dn, GO_MF)
+hyp_to_excel(hyp_GO_MF_up, file_path="./result/DEP_ORA_GO_MF_up.xlsx")
+hyp_to_excel(hyp_GO_MF_dn, file_path="./result/DEP_ORA_GO_MF_dn.xlsx")
+```
+
+## KEGG
+```{r}
+mhyp_KEGG <- hypeR(signatures, KEGG, test="hypergeometric", background=30000)
+
+hyp_dots(mhyp_KEGG, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+hypeR::rctbl_build(mhyp_KEGG, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp_KEGG_up <- hypeR(signatures$up, KEGG)
+hyp_KEGG_dn <- hypeR(signatures$dn, KEGG)
+hyp_to_excel(hyp_KEGG_up, file_path="./result/DEP_ORA_KEGG_up.xlsx")
+hyp_to_excel(hyp_KEGG_dn, file_path="./result/DEP_ORA_KEGG_dn.xlsx")
+```
+
+## REACTOME
+```{r}
+mhyp_REACTOME <- hypeR(signatures, REACTOME, test="hypergeometric", background=30000)
+
+hyp_dots(mhyp_REACTOME, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+hypeR::rctbl_build(mhyp_REACTOME, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp_REACTOME_up <- hypeR(signatures$up, REACTOME)
+hyp_REACTOME_dn <- hypeR(signatures$dn, REACTOME)
+hyp_to_excel(hyp_REACTOME_up, file_path="./result/DEP_ORA_REACTOME_up.xlsx")
+hyp_to_excel(hyp_REACTOME_dn, file_path="./result/DEP__ORA_REACTOME_dn.xlsx")
+```
+
+## HALLMARK
+```{r}
+mhyp_HALLMARK <- hypeR(signatures, HALLMARK, test="hypergeometric", background=30000)
+
+hyp_dots(mhyp_HALLMARK, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+hypeR::rctbl_build(mhyp_HALLMARK, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp_HALLMARK_up <- hypeR(signatures$up, HALLMARK)
+hyp_HALLMARK_dn <- hypeR(signatures$dn, HALLMARK)
+hyp_to_excel(hyp_HALLMARK_up, file_path="./result/DEP_ORA_HALLMARK_up.xlsx")
+hyp_to_excel(hyp_HALLMARK_dn, file_path="./result/DEP_ORA_HALLMARK_dn.xlsx")
+```
+
+## CHEA
+```{r}
+mhyp_CHEA <- hypeR(signatures, CHEA, test="hypergeometric", background=30000)
+
+hyp_dots(mhyp_CHEA, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+hypeR::rctbl_build(mhyp_CHEA, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp_CHEA_up <- hypeR(signatures$up, CHEA)
+hyp_CHEA_dn <- hypeR(signatures$dn, CHEA)
+hyp_to_excel(hyp_CHEA_up, file_path="./result/DEP_ORA_CHEA_up.xlsx")
+hyp_to_excel(hyp_CHEA_dn, file_path="./result/DEP_ORA_CHEA_dn.xlsx")
+```
+
+## TFT_GTRD
+```{r}
+mhyp_TFT_GTRD <- hypeR(signatures, TFT_GTRD, test="hypergeometric", background=30000)
+
+hyp_dots(mhyp_TFT_GTRD, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+hypeR::rctbl_build(mhyp_TFT_GTRD, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp_TFT_GTRD_up <- hypeR(signatures$up, TFT_GTRD)
+hyp_TFT_GTRD_dn <- hypeR(signatures$dn, TFT_GTRD)
+hyp_to_excel(hyp_TFT_GTRD_up, file_path="./result/DEP_ORA_TFT_GTRD_up.xlsx")
+hyp_to_excel(hyp_TFT_GTRD_dn, file_path="./result/DEP_ORA_TFT_GTRD_dn.xlsx")
+```
+
+## TFT_Legacy
+```{r}
+mhyp_TFT_Legacy <- hypeR(signatures, TFT_Legacy, test="hypergeometric", background=30000)
+
+hyp_dots(mhyp_TFT_Legacy, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+hypeR::rctbl_build(mhyp_TFT_Legacy, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp_TFT_Legacy_up <- hypeR(signatures$up, TFT_Legacy)
+hyp_TFT_Legacy_dn <- hypeR(signatures$dn, TFT_Legacy)
+hyp_to_excel(hyp_TFT_Legacy_up, file_path="./result/DEP_ORA_TFT_Legacy_up.xlsx")
+hyp_to_excel(hyp_TFT_Legacy_dn, file_path="./result/DEP_ORA_TFT_Legacy_dn.xlsx")
+```
+
+# GSEA enrichment on the protein (gene) signatures from ctrl vs AD {.tabset}
+
+Followed this tutorial https://montilab.github.io/hypeR-docs/articles/docs/fgsea.html
+
+## Setting up
+```{r}
+suppressPackageStartupMessages(library(fgsea))
+
+signature <- limmaRes2 %>% arrange(desc(t)) %>% dplyr::select(gene, t) %>% deframe()
+
+head(signature)
+```
+```{r}
+max_fdr<- 0.01
+test_fdr<- 0.01
+```
+
+```{r}
+# Create a wrapper function 
+.handle.genesets <- function(genesets) {
+    if (is(genesets, "list")) {
+        gsets.obj <- gsets$new(genesets, quiet=TRUE)
+    }
+    else if (is(genesets, "gsets") | is(genesets, "rgsets")) {
+        gsets.obj <- genesets
+    } 
+    else {
+        stop("Genesets must be gsets/rgsets object or named list of genesets")
+    }
+    return(gsets.obj)
+}
+
+fgsea.wrapper <- function(signature, genesets, sample.size=101, min.size=1, max.size=Inf, ...) {
+    # Save original arguments
+    args <- as.list(environment())
+    
+    # Save gsets object
+    gsets.obj <- .handle.genesets(genesets)
+    args$genesets <- gsets.obj
+    
+    # Run fgsea
+    results <- fgsea::fgseaMultilevel(stats=signature, 
+                                      pathways=gsets.obj$genesets, 
+                                      sampleSize=sample.size, 
+                                      minSize=min.size, 
+                                      maxSize=max.size, 
+                                      ...)
+    
+    data <- results %>%
+        data.frame() %>%
+        plyr::rename(c("pathway"="label", "padj"="fdr", "log2err"="lte", "size"="overlap", "leadingEdge"="le")) %>%
+        dplyr::rename_with(tolower) %>%
+        mutate(pval=signif(pval, 2)) %>%
+        mutate(fdr=signif(fdr, 2)) %>%
+        mutate(le=sapply(le, function(x) paste(x, collapse=','))) %>%
+        mutate(signature=length(signature)) %>%
+        mutate(geneset=sapply(label, function(x) length(gsets.obj$genesets[[x]]))) %>%
+        dplyr::select(c("label", "pval", "fdr", "lte", "es", "nes", "signature", "geneset", "overlap", "le"))
+    
+    data.up <- data %>%
+        dplyr::filter(es > 0) %>%
+        dplyr::arrange(pval, es)
+
+    data.dn <- data %>%
+        dplyr::filter(es < 0) %>%
+        dplyr::arrange(pval, es)    
+
+    # Reproducibility information
+    info <- list(fgsea=paste("v", packageVersion("fgsea"), sep=""),
+                 signature=length(signature), 
+                 genesets=args$genesets$info())
+    
+    info <- c(info, args[c("sample.size", "min.size", "max.size")])
+    info <- lapply(info, as.character)
+    
+    # Wrap dataframe in hyp object
+    hyp.up <- hyp$new(data=data.up, args=args, info=info)
+    hyp.dn <- hyp$new(data=data.dn, args=args, info=info)
+    mhyp <- multihyp$new(data=list("up"=hyp.up, "dn"=hyp.dn))
+    return(mhyp)
+}
+```
+
+```{r}
+# load in the edited functions for build reactable for GSEA results
+source('rctbl_mhyp_edit.R')
+source('rctbl_hyp_edit.R')
+```
+
+
+## GO_BP
+```{r}
+mhyp_obj_GO_BP <- fgsea.wrapper(signature, GO_BP)
+
+hyp_dots(mhyp_obj_GO_BP, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+rctbl_mhyp_edit(mhyp_obj_GO_BP, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp.up_GO_BP <- mhyp_obj_GO_BP$data$up
+hyp.dn_GO_BP <- mhyp_obj_GO_BP$data$dn
+write.csv(mhyp_obj_GO_BP$data$up$data, './result/ROSMAP_TMT_GSEA_GO_BP_up.csv')
+write.csv(mhyp_obj_GO_BP$data$dn$data, './result/ROSMAP_TMT_GSEA_GO_BP_dn.csv')
+```
+
+## GO_CC
+```{r}
+mhyp_obj_GO_CC <- fgsea.wrapper(signature, GO_CC)
+
+hyp_dots(mhyp_obj_GO_CC, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+rctbl_mhyp_edit(mhyp_obj_GO_CC, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp.up_GO_CC <- mhyp_obj_GO_CC$data$up
+hyp.dn_GO_CC <- mhyp_obj_GO_CC$data$dn
+write.csv(mhyp_obj_GO_CC$data$up$data, './result/ROSMAP_TMT_GSEA_GO_CC_up.csv')
+write.csv(mhyp_obj_GO_CC$data$dn$data, './result/ROSMAP_TMT_GSEA_GO_CC_dn.csv')
+```
+
+## GO_MF
+```{r}
+mhyp_obj_GO_MF <- fgsea.wrapper(signature, GO_MF)
+
+hyp_dots(mhyp_obj_GO_MF, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+rctbl_mhyp_edit(mhyp_obj_GO_MF, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp.up_GO_MF <- mhyp_obj_GO_MF$data$up
+hyp.dn_GO_MF <- mhyp_obj_GO_MF$data$dn
+write.csv(mhyp_obj_GO_MF$data$up$data, './result/ROSMAP_TMT_GSEA_GO_MF_up.csv')
+write.csv(mhyp_obj_GO_MF$data$dn$data, './result/ROSMAP_TMT_GSEA_GO_MF_dn.csv')
+```
+
+## REACTOME
+```{r}
+mhyp_obj_REACTOME <- fgsea.wrapper(signature, REACTOME)
+
+hyp_dots(mhyp_obj_REACTOME, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+rctbl_mhyp_edit(mhyp_obj_REACTOME, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp.up_REACTOME <- mhyp_obj_REACTOME$data$up
+hyp.dn_REACTOME <- mhyp_obj_REACTOME$data$dn
+write.csv(mhyp_obj_REACTOME$data$up$data, './result/ROSMAP_TMT_GSEA_REACTOME_up.csv')
+write.csv(mhyp_obj_REACTOME$data$dn$data, './result/ROSMAP_TMT_GSEA_REACTOME_dn.csv')
+```
+
+## KEGG
+```{r}
+mhyp_obj_KEGG <- fgsea.wrapper(signature, KEGG)
+
+hyp_dots(mhyp_obj_KEGG, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+#rctbl_mhyp_edit(mhyp_obj_KEGG, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp.up_KEGG <- mhyp_obj_KEGG$data$up
+hyp.dn_KEGG <- mhyp_obj_KEGG$data$dn
+write.csv(mhyp_obj_KEGG$data$up$data, './result/ROSMAP_TMT_GSEA_KEGG_up.csv')
+write.csv(mhyp_obj_KEGG$data$dn$data, './result/ROSMAP_TMT_GSEA_KEGG_dn.csv')
+```
+
+## HALLMARK
+```{r}
+mhyp_obj_HALLMARK <- fgsea.wrapper(signature, HALLMARK)
+
+hyp_dots(mhyp_obj_HALLMARK, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+rctbl_mhyp_edit(mhyp_obj_HALLMARK, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp.up_HALLMARK <- mhyp_obj_HALLMARK$data$up
+hyp.dn_HALLMARK <- mhyp_obj_HALLMARK$data$dn
+write.csv(mhyp_obj_HALLMARK$data$up$data, './result/ROSMAP_TMT_GSEA_HALLMARK_up.csv')
+write.csv(mhyp_obj_HALLMARK$data$dn$data, './result/ROSMAP_TMT_GSEA_HALLMARK_dn.csv')
+```
+
+## CHEA
+```{r}
+mhyp_obj_CHEA <- fgsea.wrapper(signature, CHEA)
+
+hyp_dots(mhyp_obj_CHEA, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+rctbl_mhyp_edit(mhyp_obj_CHEA, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp.up_CHEA <- mhyp_obj_CHEA$data$up
+hyp.dn_CHEA <- mhyp_obj_CHEA$data$dn
+write.csv(mhyp_obj_CHEA$data$up$data, './result/ROSMAP_TMT_GSEA_CHEA_up.csv')
+write.csv(mhyp_obj_CHEA$data$dn$data, './result/ROSMAP_TMT_GSEA_CHEA_dn.csv')
+```
+
+## TFT_GTRD
+```{r}
+mhyp_obj_TFT_GTRD <- fgsea.wrapper(signature, TFT_GTRD)
+
+hyp_dots(mhyp_obj_TFT_GTRD, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+rctbl_mhyp_edit(mhyp_obj_TFT_GTRD, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp.up_TFT_GTRD <- mhyp_obj_TFT_GTRD$data$up
+hyp.dn_TFT_GTRD <- mhyp_obj_TFT_GTRD$data$dn
+write.csv(mhyp_obj_TFT_GTRD$data$up$data, './result/ROSMAP_TMT_GSEA_TFT_GTRD_up.csv')
+write.csv(mhyp_obj_TFT_GTRD$data$dn$data, './result/ROSMAP_TMT_GSEA_TFT_GTRD_dn.csv')
+```
+
+## TFT_Legacy
+```{r}
+mhyp_obj_TFT_Legacy <- fgsea.wrapper(signature, TFT_Legacy)
+
+hyp_dots(mhyp_obj_TFT_Legacy, merge=TRUE, fdr=max_fdr) + ggplot2::ggtitle(paste("FDR ≤", max_fdr))
+
+rctbl_mhyp_edit(mhyp_obj_TFT_Legacy, hyp_hmap_args = list(fdr = test_fdr))
+
+hyp.up_TFT_Legacy <- mhyp_obj_TFT_Legacy$data$up
+hyp.dn_TFT_Legacy <- mhyp_obj_TFT_Legacy$data$dn
+write.csv(mhyp_obj_TFT_Legacy$data$up$data, './result/ROSMAP_TMT_GSEA_TFT_Legacy_up.csv')
+write.csv(mhyp_obj_TFT_Legacy$data$dn$data, './result/ROSMAP_TMT_GSEA_TFT_Legacy_dn.csv')
+```
+
+

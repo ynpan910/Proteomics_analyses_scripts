@@ -1,0 +1,269 @@
+---
+title: "ROSMAP_ProteomicsTMT_04.signature 2.comparison"
+author: "Yining Pan"
+date:   "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: united
+    code_folding: show
+    toc: true
+#    style: BS831.css  ## feel free to remove this if you don't want it
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+## include these options to avoid unnecessarily verbose output
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+# Settings
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(GSVA))
+suppressPackageStartupMessages(library(org.Hs.eg.db))
+suppressPackageStartupMessages(library(limma))
+suppressPackageStartupMessages(library(edgeR))
+suppressPackageStartupMessages(library(ComplexHeatmap))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(impute))
+suppressPackageStartupMessages(library(hypeR))
+suppressPackageStartupMessages(library(psych))
+```
+
+# Step 1: read in the cleaned Expression Set object from 01
+```{r}
+es1<- readRDS('./data/proteomics_QCed_es1.rds')
+
+# some gene symbols have multiple entries
+c(total=nrow(es1),unique=length(unique(fData(es1)$gene)))
+
+# we 'uniquefy' by taking the replicate w/ larges1t variation
+SD <- apply(exprs(es1),1,sd,na.rm=TRUE)              # compute SD of each gene
+es1 <- es1[order(SD,decreasing=TRUE),]             # sort genes1 by SD (larges1t to smalles1t)
+es1 <- es1[match(unique(fData(es1)$gene), # pick first occurrence of each
+                     fData(es1)$gene),]
+
+
+featureNames(es1) <- fData(es1)$gene
+c(total=nrow(es1),unique=length(unique(fData(es1)$gene)))
+
+## probes w/ NA's 
+sum(is.na(exprs(es1)))
+```
+
+# step 2: APOE Signature2 Projection on the ROSMAP Proteomics TMT Dataset
+
+```{r}
+apoeSIG <- list(APOEup = c("APOE", "CAMP", "APOL1", "APOC1", "LYZ",  "CETP", "MPO", "APOC4", "CTSG", "FSTL1", "DEFA3", "GC", "PLG", "KNG1"),
+                APOEdn = c( "APOB", "CTBS", "SERPINA6", "LUM"))
+```
+
+```{r}
+## let's check overlap of the signature with genes in the LOAD dataset
+data.frame(
+  original=sapply(apoeSIG,length),
+  matching=sapply(lapply(apoeSIG,intersect,toupper(featureNames(es1))),length)
+) %>% dplyr::mutate(delta=original-matching)
+```
+
+## Exercise 1: GSVA Projection
+
+```{r}
+gsvaPar1<- gsvaParam(exprData = exprs(es1), apoeSIG,use="na.rm")
+gsvaPar1
+```
+
+```{r}
+gsva.es1 <- gsva(gsvaPar1, verbose=FALSE)
+dim(gsva.es1)
+```
+
+
+```{r}
+## adding combined up-dn scores
+gsva.es1 <- rbind(gsva.es1,
+                  APOEscore=gsva.es1["APOEup",]-gsva.es1["APOEdn",])
+## show few entries    
+print(gsva.es1[,1:5])
+```
+## Exercise 2: APOE Signature Projection Heatmap
+
+```{r}
+## just checking
+all(sampleNames(es1)==colnames(gsva.es1))
+```
+```{r}
+## plotting heatmap
+
+annot <- pData(es1)[,"cogdx_1",drop=FALSE]
+annotCol <- list(cogdx_1=c(AD="black",healthy="white"))
+
+es.ord1 <- gsva.es1[,order(gsva.es1[nrow(gsva.es1),])]
+
+color_pal <- colorRampPalette(c("blue", "white", "red"))(9)
+
+pheatmap(es.ord1,
+         color = color_pal,
+         annotation_col = annot,
+         annotation_colors = annotCol,
+         cluster_rows=FALSE,
+         cluster_cols=FALSE,
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         scale = "row",height=0.25,
+         main="APOE signature 2 ROSMAP Proteomics projection",
+         cellheight=25)
+```
+
+## Test Association between APOE Signature Enrichment and LOAD Status
+
+### method 1: Test Association by KS
+
+```{r}
+all(colnames(gsva.es1)==sampleNames(es1))
+```
+```{r}
+apoe <- gsva.es1["APOEscore",]
+
+apoe_scores_ad<- rank(apoe)[es1$cogdx_1=="AD"]
+apoe_scores_ctrl<- rank(apoe)[es1$cogdx_1=="healthy"]
+```
+
+```{r}
+# Perform the Kolmogorov-Smirnov test
+ks_test_result <- ks.test(apoe_scores_ad, apoe_scores_ctrl)
+print(ks_test_result)
+```
+```{r}
+# plot 
+# Calculate the CDF for both datasets
+ad_cdf <- ecdf(apoe_scores_ad)
+ctrl_cdf <- ecdf(apoe_scores_ctrl)
+
+# Create a sequence of points that covers the range of both distributions
+x_vals <- seq(min(c(apoe_scores_ad, apoe_scores_ctrl)), max(c(apoe_scores_ad, apoe_scores_ctrl)), length.out = 100)
+
+# Calculate the CDF values for both distributions at each point
+ad_cdf_vals <- ad_cdf(x_vals)
+ctrl_cdf_vals <- ctrl_cdf(x_vals)
+
+# Calculate the D statistic (the absolute difference between the CDFs)
+d_values <- abs(ad_cdf_vals - ctrl_cdf_vals)
+
+# Find the index and value of the maximum D statistic
+max_d_index <- which.max(d_values)
+max_d_value <- d_values[max_d_index]
+max_d_x <- x_vals[max_d_index]
+
+# Create a data frame for plotting
+df <- data.frame(x = x_vals, D = d_values)
+
+# Plot using ggplot2
+library(ggplot2)
+ggplot(df, aes(x = x, y = D)) +
+  geom_line(color = "blue") +
+  # Add a dashed vertical line at the midpoint of the x-axis
+  geom_vline(xintercept = median(x_vals), linetype = "dashed", color = "black") +
+  # Add a red dot at the max D value
+  geom_point(aes(x = max_d_x, y = max_d_value), color = "red", size = 3) +
+  # Label the max D value
+  geom_text(aes(x = max_d_x, y = max_d_value, label = paste("Max D =", round(max_d_value, 3))),
+            color = "red", vjust = -1, hjust = 1) +
+  labs(title = "Kolmogorov-Smirnov D Statistic", x = "APOE Score", y = "D Statistic") +
+  theme_minimal() +
+  scale_x_continuous(limits = c(min(x_vals), max(x_vals))) +
+  scale_y_continuous(limits = c(0, max(d_values)))
+
+```
+
+### method 2: Test Association by Differential Analysis
+```{r}
+# use lm
+lmm <- lm(gsva.es1["APOEscore",] ~ es1$cogdx_1+es1$msex+es1$age_death_1+es1$pmi)
+pval_cogdx <- summary(lmm)$coefficients["es1$cogdx_1AD", "Pr(>|t|)"]
+beta<- summary(lmm)$coefficients["es1$cogdx_1AD", "Estimate"]
+
+boxplot(gsva.es1["APOEscore",] ~ es1$cogdx_1,
+        las=1,main="ROSMAP Proteomics", col=c('pink','lightblue'),pch="-",
+        xlab=paste("lm pvalue =",round(pval_cogdx, 4),
+                   ',',
+                   'beta =', round(beta, 4)),
+        ylab="APOE score")
+```
+
+```{r}
+# use wilcox test
+pval <- wilcox.test(gsva.es1["APOEscore",] ~ es1$cogdx_1)
+beta<- mean(gsva.es1["APOEscore",colnames(es1)[es1$cogdx_1=='AD']]) - mean(gsva.es1["APOEscore",colnames(es1)[es1$cogdx_1=='healthy']])
+
+boxplot(gsva.es1["APOEscore",] ~ es1$cogdx_1,
+        las=1,main="ROSMAP Proteomics", col=c('pink','lightblue'),pch="-",
+        xlab=paste("wilcox pvalue",round(pval$p.value, 4),
+                   ',',
+                   'beta =', round(beta, 4),
+                   '\n(beta = mean (AD APOE score) - mean (healthy APOE score))'),
+        ylab="APOE score")
+
+```
+
+
+# Step 3: Boxplots
+
+```{r}
+# read in limmaRes2 result
+limmaRes2<- read.csv('./result/ROSMAP_TMT_DEP_limmaRes2.csv')
+limmaRes2<- limmaRes2 %>% column_to_rownames(var = 'X')
+```
+
+
+```{r}
+# boxplot of the signature proteins
+
+ig <- unlist(apoeSIG, use.names = FALSE)
+
+for (gene in ig) {
+    if (gene %in% es1@featureData$gene) {
+        # Extract expression values
+        expr_values <- exprs(es1[es1@featureData$gene == gene, ])[1, ]
+        
+        # Group labels
+        group_labels <- es1$cogdx_1
+        
+        # Perform Wilcoxon rank-sum test
+        wilcox_pval <- wilcox.test(expr_values ~ group_labels)$p.value
+        
+        # Calculate Beta (Mean_AD - Mean_Healthy)
+        mean_AD <- mean(expr_values[group_labels == "AD"], na.rm = TRUE)
+        mean_Healthy <- mean(expr_values[group_labels == "healthy"], na.rm = TRUE)
+        beta <- mean_AD - mean_Healthy  # Beta coefficient
+        
+        # Create boxplot
+        boxplot(expr_values ~ group_labels,
+                las = 1, main = paste0(gene, " ROSMAP Proteomics"), 
+                col = c('pink', 'lightblue'), pch = "-",
+                xlab = paste0(gene, 
+                              ', ',
+                              "limma2 padj = ", 
+                              round(limmaRes2[limmaRes2$gene == gene, "adj.P.Val"], 4), 
+                              ', ',
+                              'log2FC = ', 
+                              round(limmaRes2[limmaRes2$gene == gene, "logFC"], 4),
+                              "\n",  # <-- Line break added here
+                              'Wilcox p = ', 
+                              signif(wilcox_pval, 4),
+                              ', ',
+                              'Beta = ', 
+                              round(beta, 4)  # Show Beta coefficient
+                ),
+                ylab = paste0(gene, " z-scored log2 expression"))
+    }
+}
+```
+
+```{r}
+# found two appearances of KNG1
+
+limmaRes2 %>% filter(gene=='KNG1')
+```
+

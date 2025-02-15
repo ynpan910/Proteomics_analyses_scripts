@@ -1,0 +1,263 @@
+---
+title: "ROSMAP_ProteomicsTMT_02.diffanal"
+author: "Yining Pan"
+date:   "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: united
+    code_folding: show
+    toc: true
+#    style: BS831.css  ## feel free to remove this if you don't want it
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+## include these options to avoid unnecessarily verbose output
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+# Settings
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(GSVA))
+suppressPackageStartupMessages(library(org.Hs.eg.db))
+suppressPackageStartupMessages(library(limma))
+suppressPackageStartupMessages(library(edgeR))
+suppressPackageStartupMessages(library(ComplexHeatmap))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(impute))
+suppressPackageStartupMessages(library(hypeR))
+suppressPackageStartupMessages(library(psych))
+
+```
+
+# Step 1: read in the cleaned Expression Set object from 01
+```{r}
+es1<- readRDS('./data/proteomics_QCed_es1.rds')
+```
+
+# Step 2: start limma
+
+```{r}
+# model 1
+design1<- model.matrix(~cogdx_1+msex+age_death_1+pmi+cts_mmse30_lv, data = pData(es1))
+
+fit<- lmFit(exprs(es1), design1)
+efit<- eBayes(fit)
+plotSA(efit)
+
+limmaRes1<- topTable(efit, coef = 'cogdx_1AD',adjust.method = 'BH',
+                     number = Inf,sort.by="P" )
+
+head(limmaRes1)
+```
+
+
+```{r}
+# model 2
+design2<- model.matrix(~cogdx_1+msex+age_death_1+pmi, data = pData(es1))
+
+fit<- lmFit(exprs(es1), design2)
+efit<- eBayes(fit)
+plotSA(efit)
+
+limmaRes2<- topTable(efit, coef = 'cogdx_1AD',adjust.method = 'BH',
+                     number = Inf,sort.by="P" )
+
+limmaRes2$gene<- sub("\\|.*$", "", rownames(limmaRes2))
+head(limmaRes2)
+
+write.csv(limmaRes2, './result/ROSMAP_TMT_DEP_limmaRes2.csv')
+```
+
+
+```{r}
+# Check some well established AD risk genes 
+limmaRes2[limmaRes2$gene=='APOE',]
+limmaRes2[limmaRes2$gene=='ABCA7',]
+limmaRes2[limmaRes2$gene=='APP',]
+limmaRes2[limmaRes2$gene=='PSEN1',]
+limmaRes2[limmaRes2$gene=='PSEN2',]
+```
+
+```{r}
+# boxplot of those well-established AD risk genes
+
+ig<- c('APOE', 'TREM2', 'APP', 'PSEN1', 'PSEN2')
+
+for (gene in ig) {
+  if (gene %in% es1@featureData$gene) {
+    boxplot(exprs(es1[es1@featureData$gene==gene,])[1,] ~ es1$cogdx_1,
+        las=1,main=paste0(gene," ROSMAP Proteomics"), col=c('pink','lightblue'),pch="-",
+        xlab=paste0(gene, 
+                    ', ',
+                    "limma2 padj = ", 
+                    round(limmaRes2[limmaRes2$gene==gene, "adj.P.Val"], 4), 
+                    ', ',
+                    'log2FC = ', 
+                    round(limmaRes2[limmaRes2$gene==gene, "logFC"], 4)),
+        ylab=paste0(gene, " z-scored log2 expression"))
+  }
+}
+
+```
+
+## Check how many up and dn proteins at diff threshold
+
+```{r}
+
+sig_up1<- limmaRes2 %>% filter(adj.P.Val<0.05 & logFC>0) 
+sig_dn1<- limmaRes2 %>% filter(adj.P.Val<0.05 & logFC<0)
+
+head(sig_up1);
+head(sig_dn1);
+
+print(paste('At padj<0.05, we have', dim(sig_up1)[1], 'up proteins', '(logFC>0),', 
+            dim(sig_dn1)[1], 'dn proteins', '(logFC<0)'))
+```
+
+
+```{r}
+
+sig_up2<- limmaRes2 %>% filter(adj.P.Val<0.01 & logFC>0) 
+sig_dn2<- limmaRes2 %>% filter(adj.P.Val<0.01 & logFC<0)
+
+head(sig_up2);
+head(sig_dn2);
+
+print(paste('At padj<0.01, we have', dim(sig_up2)[1], 'up proteins', '(logFC>0),', 
+            dim(sig_dn2)[1], 'dn proteins', '(logFC<0)'))
+```
+
+
+```{r}
+
+sig_up3<- limmaRes2 %>% filter(adj.P.Val<0.1 & logFC>0) 
+sig_dn3<- limmaRes2 %>% filter(adj.P.Val<0.1 & logFC<0)
+
+head(sig_up3);
+head(sig_dn3);
+
+print(paste('At padj<0.1, we have', dim(sig_up3)[1], 'up proteins', '(logFC>0),', 
+            dim(sig_dn3)[1], 'dn proteins', '(logFC<0)'))
+```
+## Heatmap+clustering
+
+```{r}
+# define a simple function that implement optimal leaf ordering
+library("cba")
+hcopt <- function(d, HC=NULL, method = "ward.D", members = NULL)
+{
+  if ( is.null(HC) ) { 
+    HC <- hclust(d,method=method,members=members)
+  }
+  ORD <- order.optimal(d,merge=HC$merge)
+  HC$merge <- ORD$merge
+  HC$order <- ORD$order
+  HC
+}
+```
+
+
+```{r}
+# prepare columns annotation
+anno<- pData(es1)
+anno<- anno %>% dplyr:: select(cogdx_1, msex, cogdx)
+anno<- anno %>% arrange(cogdx_1)
+anno$msex<- as.factor(anno$msex)
+anno$cogdx<- as.factor(anno$cogdx)
+
+annot_col <- list(
+  msex=c('0'='pink', '1'='skyblue'),
+  cogdx_1=c("healthy"="green","AD"="orange"),
+  cogdx=c('1' = '#FAFD7CFF', '4'='#925E9FB2', '5'='red'))
+```
+
+
+
+
+```{r}
+# at padj<0.01
+
+dep<- rownames(rbind(sig_dn2, sig_up2))
+mt<- exprs(es1)[dep,]
+mt<- mt[, match(rownames(anno), colnames(mt))]
+identical(rownames(anno), colnames(mt))
+
+# genes by correlation (not necessary here since they are z-scored)
+hc_row <- hcopt(as.dist(1-cor(t(mt),use="pairwise.complete.obs")),method="ward.D2")
+# samples
+hc_col <- hcopt(dist(t(mt)),method="ward.D2")
+
+breaks1 <- seq(-1, 1, 0.01)
+colors1<- colorRampPalette(c('#197EC0FF', 'white','red'))(length(breaks1) - 1)
+
+pheatmap::pheatmap(mt,
+                   breaks = breaks1, color = colors1,
+                   annotation_col = anno,
+                   annotation_colors = annot_col,
+                   cluster_cols=hc_col,
+                   cluster_rows=hc_row,
+                  show_rownames = FALSE,
+                  show_colnames = FALSE,
+                  scale = "row",
+                  fontsize = 5)
+```
+
+```{r}
+# at padj<0.05
+dep<- rownames(rbind(sig_dn1, sig_up1))
+mt<- exprs(es1)[dep,]
+mt<- mt[, match(rownames(anno), colnames(mt))]
+identical(rownames(anno), colnames(mt))
+
+# genes by correlation (not necessary here since they are z-scored)
+hc_row <- hcopt(as.dist(1-cor(t(mt),use="pairwise.complete.obs")),method="ward.D2")
+# samples
+hc_col <- hcopt(dist(t(mt)),method="ward.D2")
+
+# prepare colors
+breaks1 <- seq(-1, 1, 0.01)
+colors1<- colorRampPalette(c('#197EC0FF', 'white','red'))(length(breaks1) - 1)
+
+pheatmap::pheatmap(mt,
+                   breaks = breaks1, color = colors1,
+                   annotation_col = anno,
+                   annotation_colors = annot_col,
+                   cluster_cols=hc_col,
+                   cluster_rows=hc_row,
+                  show_rownames = FALSE,
+                  show_colnames = FALSE,
+                  scale = "row",
+                  fontsize = 5)
+```
+
+
+```{r}
+# at padj<0.1
+
+dep<- rownames(rbind(sig_dn3, sig_up3))
+mt<- exprs(es1)[dep,]
+mt<- mt[, match(rownames(anno), colnames(mt))]
+identical(rownames(anno), colnames(mt))
+
+# genes by correlation (not necessary here since they are z-scored)
+hc_row <- hcopt(as.dist(1-cor(t(mt),use="pairwise.complete.obs")),method="ward.D2")
+# samples
+hc_col <- hcopt(dist(t(mt)),method="ward.D2")
+
+breaks1 <- seq(-1, 1, 0.01)
+colors1<- colorRampPalette(c('#197EC0FF', 'white','red'))(length(breaks1) - 1)
+
+pheatmap::pheatmap(mt,
+                   breaks = breaks1, color = colors1,
+                   annotation_col = anno,
+                   annotation_colors = annot_col,
+                   cluster_cols=hc_col,
+                   cluster_rows=hc_row,
+                  show_rownames = FALSE,
+                  show_colnames = FALSE,
+                  scale = "row",
+                  fontsize = 5)
+```

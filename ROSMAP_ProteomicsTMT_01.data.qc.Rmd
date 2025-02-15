@@ -1,0 +1,708 @@
+---
+title: "ROSMAP_ProteomicsTMT_01.data.qc"
+author: "Yining Pan"
+date:   "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: united
+    code_folding: show
+    toc: true
+#    style: BS831.css  ## feel free to remove this if you don't want it
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+## include these options to avoid unnecessarily verbose output
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+# Settings
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(GSVA))
+suppressPackageStartupMessages(library(org.Hs.eg.db))
+suppressPackageStartupMessages(library(limma))
+suppressPackageStartupMessages(library(edgeR))
+suppressPackageStartupMessages(library(ComplexHeatmap))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(impute))
+suppressPackageStartupMessages(library(hypeR))
+suppressPackageStartupMessages(library(psych))
+```
+
+
+
+# Raw data downloaded from ROSMAP
+
+TMT data: C2.median_polish_corrected_log2(abundanceRatioCenteredOnMedianOfBatchMediansPerProtein)-8817x400.csv (syn21266454)
+
+clinical individual data: ROSMAP_clinical.csv (syn3191087)
+
+biospecimen metadata: ROSMAP_biospecimen_metadata.csv (syn21323366)
+
+# step 1: individual selection
+
+```{r}
+# load in raw data
+biospe<- read.csv('./data/ROSMAP_biospecimen_metadata.csv', check.names = F)
+cli<- read.csv('./data/ROSMAP_clinical.csv', check.names = F)
+lg2<- read.csv('./data/C2.median_polish_corrected_log2(abundanceRatioCenteredOnMedianOfBatchMediansPerProtein)-8817x400.csv')
+lg2<- lg2 %>% tibble::column_to_rownames(var = 'X')
+
+#prepare the biospecimen information to only include brain DLPFC bulkRNA samples
+unique(biospe$organ)
+unique(biospe$nucleicAcidSource)
+unique(biospe$assay)
+unique(biospe$tissue)
+biospe<- biospe %>% filter(assay=='TMT quantitation' )
+unique(biospe$organ)
+unique(biospe$nucleicAcidSource)
+unique(biospe$assay)
+unique(biospe$tissue)
+
+#also remove those with 'exclude' column==TRUE, who are 'sample swap'.
+biospe <- biospe %>%
+  filter(is.na(exclude) == T)
+
+#prepare clinical metadata to only include individuals with healthy, pure AD, and AD with other conditions contributing to cognitive impairment
+cli<- cli %>% filter(cogdx %in% c(1, 4))
+```
+
+```{r}
+# align the cli and biospe (they are linked by 'individualID')
+ov<- intersect(cli$individualID, biospe$individualID)
+
+biospe_in<- biospe %>% filter(individualID %in% ov)
+cli_in<- cli %>% filter(individualID %in% ov)
+
+# check for duplicates
+sum(duplicated(biospe_in$individualID))
+
+dup_biospe <- biospe_in %>%
+  group_by(individualID) %>%
+  filter(n() > 1) %>%
+  ungroup() %>%
+  arrange(individualID)
+dup_biospe$individualID
+
+## there are six individuals who has two specimens, we take their first row's sample
+
+# check again to see if there are any more duplicates
+biospe_in <- biospe_in %>%
+  distinct(individualID, .keep_all = TRUE)
+
+sum(biospe_in$exclude, na.rm = T)
+
+```
+
+```{r}
+# align expression data (aka, the lg2) and biospe (they are linked by 'specimenID')
+
+biospe_in$specimenID2<- gsub("ROSMAP\\.DLPFC\\.", "", biospe_in$specimenID)
+biospe_in$specimenID2<- sub("^([^.]+\\.[^.]+)\\..*$", "\\1", biospe_in$specimenID2)
+
+ov2<- intersect(biospe_in$specimenID2, colnames(lg2))
+
+lg2_in<- lg2 %>% dplyr::select( ov2)
+biospe_in<- biospe_in %>% filter(specimenID2 %in% ov2)
+cli_in<- cli %>% filter(individualID %in% biospe_in$individualID)
+
+setequal(cli_in$individualID, biospe_in$individualID)
+setequal( biospe_in$specimenID2, colnames(lg2_in))
+```
+
+```{r}
+# add specimenID to the clinical metadata
+
+# aka, add specimenID2 from biospe_in to cli_in, in order to align lg2 data and clinical data using specimenID2, because there are only specimenID2 in the original lg2 data
+
+biospe_in_reform<- biospe_in[match(colnames(lg2_in), biospe_in$specimenID2),]
+identical(colnames(lg2_in), biospe_in$specimenID2)
+
+cli_in_reform<- cli_in [match(biospe_in_reform$individualID, cli_in$individualID),]
+identical(biospe_in_reform$individualID, cli_in_reform$individualID)
+
+cli_in_reform$specimenID2<- biospe_in_reform$specimenID2
+
+identical(colnames(lg2_in), cli_in_reform$specimenID2)
+rownames(cli_in_reform)<- NULL
+cli_in_reform<- cli_in_reform %>% column_to_rownames(var = 'specimenID2')
+
+identical(colnames(lg2_in), rownames(cli_in_reform))
+
+#write.csv(cli_in_reform, 'deg_TMT_binary_individual_clinical_info.csv')
+#write.csv(lg2_in, 'deg_binary_TMT_exp_matrix.csv')
+```
+
+So finally, we can include 277 individuals.
+
+
+# step 2: Look at participants characteristics
+
+
+## Data cleaning
+
+```{r}
+# put NA in all areas with missing values
+cli_in_reform <- cli_in_reform %>%
+  mutate_all(~ ifelse(is.na(.), NA, .))
+
+cli_in_reform$age_first_ad_dx <- na_if(cli_in_reform$age_first_ad_dx, "")
+
+# check NAs
+cli_in_na<- cli_in_reform %>%
+  group_by(cogdx) %>%
+  summarise(across(everything(), ~ sum(is.na(.)), .names = "{col}"))%>%
+  print(width = Inf)
+
+## there is one healthy individual who  doesnt have pmi, so i use the mean of other healthy's
+num<- which(is.na(cli_in_reform$pmi), arr.ind = TRUE)
+
+cli_in_reform[num, 'pmi']<- mean(cli_in_reform %>% filter(cogdx == 1) %>% dplyr::select(pmi) %>% unlist(), na.rm = TRUE)
+
+```
+
+```{r}
+# In the age columns, entries>=90 are listed as 90+. For calculations, I used 91 as a representative value
+cli_in_reform$age_first_ad_dx_1<- ifelse(cli_in_reform$age_first_ad_dx=='90+', 91, cli_in_reform$age_first_ad_dx)
+cli_in_reform$age_first_ad_dx_1<- as.numeric(cli_in_reform$age_first_ad_dx_1)
+
+cli_in_reform$age_death_1<- ifelse(cli_in_reform$age_death=='90+', 91, cli_in_reform$age_death)
+cli_in_reform$age_death_1<- as.numeric(cli_in_reform$age_death_1)
+
+```
+
+
+```{r}
+### as suggested by ROSMAP, I dichotomize the ceradsc into yes and no.
+cli_in_reform$ceradsc_binary<- ifelse(cli_in_reform$ceradsc %in% c(1, 2), 'yes', 'no')
+
+cli_in_reform$apoe_genotype<- factor(cli_in_reform$apoe_genotype, levels = c(
+  '22', '23', '33', '24','34', '44'
+))
+cli_in_reform$braaksc<- factor(cli_in_reform$braaksc, levels = c(
+  0, 1, 2, 3, 4, 5, 6
+))
+```
+
+
+```{r}
+# check the number of individuals in healthy and AD group
+cli_in_reform$cogdx_1<- ifelse(cli_in_reform$cogdx==1, 'healthy', 'AD')
+cli_in_reform$cogdx_1<- factor(cli_in_reform$cogdx_1, levels = c('healthy', 'AD'))
+class(cli_in_reform$cogdx_1); levels(cli_in_reform$cogdx_1)
+
+table(cli_in_reform$cogdx);table(cli_in_reform$cogdx_1)
+
+```
+
+# step 3: Look at the proteomics data
+
+We now have 291 selected individuals and 8817 proteins. The 8817 proteins are z-scored log2 transformed protein expression values, and batch effects removed values provided by ROSMAP. It contains NAs. 
+
+## Dataset distribution
+
+```{r}
+
+# make a ExpressionSet object
+
+## just checking
+identical(rownames(cli_in_reform), colnames(lg2_in))
+#' cli_in_reform is metadata; lg2_in is protein values.
+
+es <- ExpressionSet(assayData = as.matrix(lg2_in), phenoData = AnnotatedDataFrame(cli_in_reform))
+
+dim(es)
+
+```
+
+```{r}
+# make histogram to show the distribution of protein values
+
+## arrange ALL expression columns into a single column
+DF <- data.frame(t(exprs(es))) %>% 
+    tidyr::pivot_longer(everything(),names_to="protein",values_to="log2gep")
+
+## plot histogram + density across all cohort groups
+ggplot(DF,aes(x=log2gep)) + 
+  geom_histogram(aes(y=..density..), col="black",fill="pink", alpha=0.4) +
+  geom_density()
+```
+
+## Distribution of missing values
+
+```{r}
+DF_miss <- data.frame(
+  feature=featureNames(es),
+  nmissing=rowSums(is.na(exprs(es)))) %>%
+  dplyr::mutate(miss_rate=nmissing/ncol(es))
+ggplot(DF_miss,aes(x=miss_rate)) +
+  geom_histogram(aes(y=..density..), col="black",fill="pink") +
+  labs(title="distribution of missing values")
+#write.csv(DF_miss, 'data/ROSMAP_TMT_missing_values_summary.csv' )
+```
+
+## Sample-specific boxplots
+
+Here, we generate sample-specific boxplots to look at the distribuion within each sample. Because we only have log2-transformed data, we will only show that.
+
+```{r}
+proteins <- sample(seq(1,nrow(es)),size=100) # subsetting to speed up plotting
+
+es_ord <- es[,order(es$cogdx_1,matrixStats::colMedians(exprs(es)))]
+phenotypePalette <- c("gray","pink","red")
+boxplot(exprs(es_ord)[proteins,],log="",las=2,pch="-",col=phenotypePalette[es_ord$cogdx_1])
+```
+
+
+## Location vs. scale plots
+
+Last, we look at protein expression variation as a function of average expression. Below, we compute mean and standard deviation for each protein, and we plot one against the other. One can also use median and median absolute deviation, estimates that are more robust to outliers. We also show the relationship between the two measurements (i.e., SD vs. MAD, notice the wider range of the non-robust statistics).
+
+
+```{r}
+DF1 <- data.frame(
+  mean=matrixStats::rowMeans2(exprs(es)),
+  sd=matrixStats::rowSds(exprs(es)),
+  median=matrixStats::rowMedians(exprs(es)),
+  mad=matrixStats::rowMads(exprs(es)))
+
+p1 <- ggplot(DF1,aes(x=mean,y=sd)) +
+  geom_point() + labs(title="mean vs. standard deviation (SD)")
+p2 <- ggplot(DF1,aes(x=median,y=mad)) +
+  geom_point() + labs(title="median vs. median absolute deviation (MAD)")
+p3 <- ggplot(DF1,aes(x=mean,y=median)) +
+  geom_point() + labs(title="mean vs. median")
+p4 <- ggplot(DF1,aes(x=sd,y=mad)) +
+  geom_point() + labs(title="SD vs. MAD")
+gridExtra::grid.arrange(p1,p2,p3,p4,ncol=2)
+
+```
+
+
+## Deal with missing values
+
+### Step 1: examine: Are the missing values random??
+
+```{r}
+# select features w/ missing values 
+na_cnt <- rowSums(is.na(exprs(es))) 
+eset_wmis <- es[na_cnt > 5 & ncol(es) - na_cnt > 5,]
+
+# perform Fisher test on each row
+na_assoc <- apply( is.na(exprs(eset_wmis)), 1, function(X) {
+  fisher.test(X, eset_wmis$cogdx_1)$p.value
+})
+
+# generate plot of nominal p-values
+hist(na_assoc, main="Histogram of nominal p values")
+
+```
+
+
+```{r}
+# padj
+padj=p.adjust(na_assoc, method = 'BH')
+
+# generate plot of padj
+hist(padj, main="Histogram of padj")
+```
+
+```{r}
+# generate phi coefficient between missing values and AD status on each row
+na_assoc_phi <- apply( is.na(exprs(eset_wmis)), 1, function(X) {
+  phi(table(X, eset_wmis$cogdx_1))
+})
+
+# generate plot of phi
+hist(na_assoc_phi, main="Histogram of phi")
+```
+
+```{r}
+# make a dataframe to show each protein's nominal p-value, adjusted p-val, and phi
+na_assoc_dt<- data.frame(protein=rownames(eset_wmis),
+                         nominal_p=na_assoc,
+                         padj=padj,
+                         phi=na_assoc_phi)
+
+# list out the proteins with a nominal p-val less than 0.05
+print(na_assoc_dt %>% filter(nominal_p<0.05))
+```
+So, we assume that there are no proteins randomness are associated with AD status.
+
+
+### step 2: Remove proteins w/ > ~30% missing values
+```{r}
+dim(es)
+
+es_mis.rm<- es[ rowSums(is.na(exprs(es)))<=(291*0.3),]
+
+dim(es_mis.rm)
+```
+That leaves us with 8055 proteins and 277 individuals.
+
+## PCA after imputing NAs
+
+### step 1:Impute all NAs by half-min impute just for the PCA step
+
+```{r}
+#####################################################
+## HALF MIN IMPUTE
+#####################################################
+
+halfmin_impute <- function(dat) {
+  halfmin <- matrix(matrixStats::rowMins(dat, na.rm = TRUE) / 2,
+                    nrow = nrow(dat), ncol = ncol(dat), dimnames = dimnames(dat)
+  )
+  ## just checking
+  stopifnot(all.equal(
+    matrixStats::rowMeans2(halfmin),
+    matrixStats::rowMins(dat, na.rm = TRUE) / 2
+  ))
+  dat[is.na(dat)] <- halfmin[is.na(dat)]
+  return(dat)
+}
+
+```
+
+```{r}
+es_mis.rm_imp<- es_mis.rm
+exprs(es_mis.rm_imp)<- halfmin_impute(exprs(es_mis.rm_imp))
+
+exp_mis.rm_imp<- exprs(es_mis.rm_imp)
+```
+
+### step 2: start PCA
+
+
+```{r}
+pca<- prcomp(t(exprs(es_mis.rm_imp)), scale = TRUE ) ## perform PCA
+summary(pca)$importance[,1:4]                 ## show variance explained by each component
+```
+```{r}
+DF_pca <- dplyr::inner_join(
+    data.frame(pca$x) %>% tibble::rownames_to_column("sampleID"),
+    pData(es_mis.rm_imp) %>% dplyr::select(cogdx_1) %>% tibble::rownames_to_column("sampleID"),
+    by="sampleID") %>%
+    dplyr::select(sampleID,cogdx_1,PC1:PC5)
+ggplot(DF_pca,aes(x=PC1,y=PC2,col=cogdx_1)) +
+    geom_point()
+```
+
+
+```{r}
+# highlight the outlier
+
+ggplot(DF_pca,aes(x=PC1,y=PC2,col=cogdx_1)) +
+    geom_point() +
+    geom_point(data=DF_pca %>% filter(PC1> 200),aes(x=PC1,y=PC2),color="blue",size=3)
+```
+
+
+```{r}
+## remove outliers and re-plot
+DF_nooutlier <- DF_pca %>% filter(PC1< 200)
+ggplot(DF_nooutlier,aes(x=PC1,y=PC2,col=cogdx_1)) +
+    geom_point()
+```
+
+
+```{r}
+# find out the outlier individual and remove it
+individual_to_rm<- rownames(as.data.frame(pca$x) %>% filter(PC1> 200))
+
+es_mis.rm<- es_mis.rm[,colnames(es_mis.rm) != individual_to_rm]
+
+dim(es_mis.rm)
+```
+So, now we have 8055 proteins (with <=30% NAs) and 276 individuals.
+
+```{r}
+# add the short protein name as a featureData 
+es_mis.rm@featureData$gene<- sub("\\|.*", "", rownames(es_mis.rm))
+
+saveRDS(es_mis.rm, './data/proteomics_QCed_es1.rds')
+```
+
+## Heatmap + hierarchical clustering of top varying proteins (top 2000)
+
+```{r}
+# read in the saved ready-to-use ES object
+es1<- readRDS('./data/proteomics_QCed_es1.rds')
+```
+
+
+```{r}
+#subset top 2000 data
+DF1_qced <- data.frame(
+  mean=matrixStats::rowMeans2(exprs(es1)),
+  sd=matrixStats::rowSds(exprs(es1)),
+  median=matrixStats::rowMedians(exprs(es1)),
+  mad=matrixStats::rowMads(exprs(es1)))
+DF1_qced<- DF1_qced %>% arrange(-sd)
+high_var_pro<- rownames(DF1_qced[1:2000,])
+mt<- exprs(es1)[high_var_pro,]
+```
+```{r}
+# prepare annotation
+anno<- pData(es1)
+anno<- anno %>% dplyr:: select(cogdx_1, msex, cogdx)
+anno<- anno %>% arrange(cogdx_1)
+anno$msex<- as.factor(anno$msex)
+anno$cogdx<- as.factor(anno$cogdx)
+mt<- mt[, match(rownames(anno), colnames(mt))]
+identical(rownames(anno), colnames(mt))
+
+annot_col <- list(
+  msex=c('0'='pink', '1'='skyblue'),
+  cogdx_1=c("healthy"="green","AD"="orange"),
+  cogdx=c('1' = '#FAFD7CFF', '4'='#925E9FB2', '5'='red'))
+```
+
+
+```{r}
+#first define a simple function to create a color gradient to be used for coloring the gene expression heatmaps.
+
+colGradient <- function( cols, length, cmax=255 )
+{
+  ## e.g., to create a white-to-red gradient with 10 levels
+  ##
+  ##   colGradient(cols=c('white','red'),length=10)
+  ##
+  ## or, to create a blue-to-white-to-red gradients with 9 colors (4 blue's, white, 4 red's)
+  ##
+  ##   colGradient(cols=c('blue','white','red'),length=9)
+  ##
+  ramp <- colorRamp(cols)
+  rgb( ramp(seq(0,1,length=length)), max=cmax )
+}
+```
+
+
+```{r}
+# visualization 1 conventional heatmap using hclust
+
+# genes by correlation (not necessary here since they are z-scored)
+hc_row <- hclust(as.dist(1-cor(t(mt))),method="ward.D2")
+# samples
+hc_col <- hclust(dist(t(mt)),method="ward.D2")
+
+## color gradient for the expression levels (blue=down-regulated; white=neutral; red=up-regulated)
+bwrPalette <- colGradient(c("blue","white","red"),length=20)
+
+pheatmap::pheatmap(mt,
+                   color=bwrPalette,
+                   annotation_col = anno,
+                   annotation_colors = annot_col,
+                   cluster_cols=hc_col,
+                   cluster_rows=hc_row,
+                  show_rownames = FALSE,
+                  show_colnames = FALSE,
+                  scale = "row",
+                  fontsize = 5)
+
+```
+
+
+```{r}
+# Visualization 2: optimal leaf ordering using hcopt
+
+# define a simple function that implement optimal leaf ordering
+library("cba")
+hcopt <- function(d, HC=NULL, method = "ward.D", members = NULL)
+{
+  if ( is.null(HC) ) { 
+    HC <- hclust(d,method=method,members=members)
+  }
+  ORD <- order.optimal(d,merge=HC$merge)
+  HC$merge <- ORD$merge
+  HC$order <- ORD$order
+  HC
+}
+
+
+# genes by correlation (not necessary here since they are z-scored)
+hc_row <- hcopt(as.dist(1-cor(t(mt))),method="ward.D2")
+# samples by euclidean distance (default)
+hc_col <- hcopt(dist(t(mt)),method="ward.D2")
+
+## color gradient for the expression levels (blue=down-regulated; white=neutral; red=up-regulated)
+bwrPalette <- colGradient(c("blue","white","red"),length=20)
+
+pheatmap::pheatmap(mt,
+                   color=bwrPalette,
+                   annotation_col = anno,
+                   annotation_colors = annot_col,
+                   cluster_cols=hc_col,
+                   cluster_rows=hc_row,
+                  show_rownames = FALSE,
+                  show_colnames = FALSE,
+                  scale = "row",
+                  fontsize = 5)
+```
+
+```{r}
+## to make the colors more saturated using hcopt
+breaks1 <- seq(-2, 2, 0.01)
+colors1<- colorRampPalette(c('#197EC0FF', 'white','red'))(length(breaks1) - 1)
+
+pheatmap::pheatmap(mt,
+                   breaks = breaks1, color = colors1,
+                   annotation_col = anno,
+                   annotation_colors = annot_col,
+                   cluster_cols=hc_col,
+                   cluster_rows=hc_row,
+                  show_rownames = FALSE,
+                  show_colnames = FALSE,
+                  scale = "row",
+                  fontsize = 5)
+```
+
+
+```{r}
+# Visualization 3: Alternative Agglomeration Rules
+
+## complete linkage
+ho_row1 <- hcopt(as.dist(1-cor(t(mt))),method="complete") # genes by correlation
+ho_col1 <- hcopt(dist(t(mt)),method="complete")           # samples by euclidean distance (default)
+pheatmap(mt,
+         color=bwrPalette, 
+         annotation_col = anno,
+         annotation_colors = annot_col,
+         cluster_rows=ho_row1,
+         cluster_cols=ho_col1,
+         show_rownames = FALSE,
+         show_colnames = FALSE,
+         scale = "row",
+         fontsize = 5)
+
+
+```
+
+```{r}
+## single linkage
+ho_row2 <- hclust(as.dist(1-cor(t(mt))),method="single") # genes by correlation
+ho_col2 <- hcopt(dist(t(mt)),method="single")            # samples by euclidean distance (default)
+pheatmap(mt,
+         color=bwrPalette, 
+         annotation_col = anno,
+         annotation_colors = annot_col,
+         cluster_rows=ho_row2,
+         cluster_cols=ho_col2,
+         show_rownames = FALSE,
+         show_colnames = FALSE,
+         scale = "row",
+         fontsize = 5)
+```
+
+
+
+
+# step 4: Summary statistics on Individual characteristics
+
+```{r}
+# because we removed 1 individual when checking PCA in step 3, we need to update metadata and expression matrix
+
+cli_in_reform<- pData(es1)
+```
+
+```{r}
+# check the number of individuals in healthy and AD group
+class(cli_in_reform$cogdx_1); levels(cli_in_reform$cogdx_1)
+
+table(cli_in_reform$cogdx);table(cli_in_reform$cogdx_1)
+
+```
+```{r}
+# summary stats for continuous variable
+cli_in_reform %>%
+  group_by(cogdx_1) %>%
+  summarise(
+    count = n(),
+    
+    #age_first_ad_dx
+    #mean_age_first_ad_dx = mean(age_first_ad_dx_1, na.rm = TRUE),
+    #sd_age_first_ad_dx = sd(age_first_ad_dx_1, na.rm = TRUE),
+    ## (all missing values in health group)
+    
+    #age_death
+    mean_age_death = mean(age_death_1, na.rm = TRUE),
+    sd_age_death = sd(age_death_1, na.rm = TRUE),
+    
+    #education year
+    mean_educ = mean(educ, na.rm = TRUE),
+    sd_educ = sd(educ, na.rm = TRUE),
+    
+    #pmi (post-mortem interval)
+    mean_pmi = mean(pmi, na.rm = TRUE),
+    sd_pmi = sd(pmi, na.rm = TRUE),  
+    
+    #MMSE score
+    mean_mmse = mean(cts_mmse30_lv, na.rm = TRUE),
+    sd_mmse = sd(cts_mmse30_lv, na.rm = TRUE)
+    
+  ) %>%
+  print(width = Inf)
+```
+
+
+```{r}
+# summary stats for categorical variable
+cli_cate_summary <- cli_in_reform %>%
+  group_by(cogdx_1) %>%
+  summarise(
+    count = n(),
+    
+    sex_distribution = paste0(names(table(msex)), ": ", table(msex), " (", round(100 * table(msex) / n(), 1), "%)", collapse = ", "),
+    race_distribution = paste0(names(table(race)), ": ", table(race), " (", round(100 * table(race) / n(), 1), "%)", collapse = ", "),
+    apoe_genotype_distribution = paste0(names(table(apoe_genotype)), ": ", table(apoe_genotype), " (", round(100 * table(apoe_genotype) / n(), 1), "%)", collapse = ", "),
+    braaksc_distribution = paste0(names(table(braaksc)), ": ", table(braaksc), " (", round(100 * table(braaksc) / n(), 1), "%)", collapse = ", "),
+    ceradsc_distribution = paste0(names(table(ceradsc)), ": ", table(ceradsc), " (", round(100 * table(ceradsc) / n(), 1), "%)", collapse = ", ")
+  ) %>%
+  print(width = Inf)
+```
+
+## bivariate tests on the baseline characteristics
+
+```{r}
+## t test for continuous variables
+continuous_vars <- c('educ', "age_death_1", "cts_mmse30_lv", "pmi")
+
+for (var in continuous_vars){
+  df<- cli_in_reform %>%
+    dplyr::select(c(cogdx_1, all_of(var)))
+  
+  res.ftest <- var.test(df[[var]]~cogdx_1, data = df)
+  res.ftest
+  
+  var.equa <- ifelse(res.ftest$p.value > 0.05, TRUE, FALSE)
+  t.res <- t.test(df[[var]]~cogdx_1, data = df, var.equal = var.equa)
+  pval_rounded <- round(t.res$p.value, 4)
+  
+  print(paste0('Difference in ', var, ' : pval= ', pval_rounded))
+  
+}
+
+```
+
+```{r}
+## chi-square for categorical variables
+
+categorical_vars <- c('msex', "race", 'apoe_genotype', 'braaksc','ceradsc_binary')
+
+for (var in categorical_vars){
+  df<- cli_in_reform %>%
+    dplyr::select(c(cogdx_1, all_of(var)))
+  
+  res.chisq <- chisq.test(table(df$cogdx_1, df[[var]]))
+  print(res.chisq)  
+  
+  
+  pval_rounded <- round(res.chisq$p.value, 4)
+  
+  
+  print(paste0('Difference in ', var, ' : p-value= ', pval_rounded))
+}
+
+```
