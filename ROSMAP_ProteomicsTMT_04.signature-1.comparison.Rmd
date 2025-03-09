@@ -70,7 +70,7 @@ data.frame(
 ## Exercise 1: GSVA Projection
 
 ```{r}
-gsvaPar1<- gsvaParam(exprData = exprs(es1), apoeSIG,use="na.rm")
+gsvaPar1<- gsvaParam(exprData = exprs(es1), apoeSIG,use="na.rm")  #exprData: rows are genes, columns are samples 
 gsvaPar1
 ```
 
